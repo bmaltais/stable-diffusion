@@ -57,16 +57,16 @@ dream> q
 00011.png: "there's a fly in my soup" -n6 -g -S 2685670268
 ~~~~
 
-The dream> prompt's arguments are pretty much
-identical to those used in the Discord bot, except you don't need to
-type "!dream" (it doesn't hurt if you do). A significant change is that creation of individual images 
-is now the default
-unless --grid (-g) is given. For backward compatibility, the -i switch is recognized.
-For command-line help type -h (or --help) at the dream> prompt.
+The dream> prompt's arguments are pretty much identical to those used
+in the Discord bot, except you don't need to type "!dream" (it doesn't
+hurt if you do). A significant change is that creation of individual
+images is now the default unless --grid (-g) is given. For backward
+compatibility, the -i switch is recognized.  For command-line help
+type -h (or --help) at the dream> prompt.
 
-The script itself also recognizes a series of command-line switches that will change
-important global defaults, such as the directory for image outputs and the location
-of the model weight files.
+The script itself also recognizes a series of command-line switches
+that will change important global defaults, such as the directory for
+image outputs and the location of the model weight files.
 
 ## Image-to-Image
 
@@ -84,7 +84,52 @@ The --init_img (-I) option gives the path to the seed picture. --strength (-f) c
 the original will be modified, ranging from 0.0 (keep the original intact), to 1.0 (ignore the original
 completely). The default is 0.75, and ranges from 0.25-0.75 give interesting results.
 
+## Weighted Prompts
+
+You may weight different sections of the prompt to tell the sampler to attach different levels of
+priority to them, by adding :(number) to the end of the section you wish to up- or downweight.
+For example consider this prompt:
+
+~~~~
+    tabby cat:0.25 white duck:0.75 hybrid
+~~~~
+
+This will tell the sampler to invest 25% of its effort on the tabby
+cat aspect of the image and 75% on the white duck aspect
+(surprisingly, this example actually works). The prompt weights can
+use any combination of integers and floating point numbers, and they
+do not need to add up to 1.
+
 ## Changes
+
+* v1.07 (23 August 2022)
+   * Image filenames will now never fill gaps in the sequence, but will be assigned the
+     next higher name in the chosen directory. This ensures that the alphabetic and chronological
+     sort orders are the same.
+
+* v1.06 (23 August 2022)
+   * Added weighted prompt support contributed by [xraxra](https://github.com/xraxra)
+   * Example of using weighted prompts to tweak a demonic figure contributed by [bmaltais](https://github.com/bmaltais)
+
+* v1.05 (22 August 2022 - after the drop)
+   * Filenames now use the following formats:
+       000010.95183149.png      -- Two files produced by the same command (e.g. -n2),
+       000010.26742632.png      -- distinguished by a different seed.
+
+       000011.455191342.01.png  -- Two files produced by the same command using
+       000011.455191342.02.png  -- a batch size>1 (e.g. -b2). They have the same seed.
+
+       000011.4160627868.grid#1-4.png  -- a grid of four images (-g); the whole grid can
+                                          be regenerated with the indicated key
+
+    * It should no longer be possible for one image to overwrite another
+    * You can use the "cd" and "pwd" commands at the dream> prompt to set and retrieve
+      the path of the output directory.
+     
+* v1.04 (22 August 2022 - after the drop)
+   * Updated README to reflect installation of the released weights.
+   * Suppressed very noisy and inconsequential warning when loading the frozen CLIP
+   tokenizer.
 
 * v1.03 (22 August 2022)
    * The original txt2img and img2img scripts from the CompViz repository have been moved into
@@ -104,6 +149,8 @@ completely). The default is 0.75, and ranges from 0.25-0.75 give interesting res
 
 
 ## Installation
+
+There are separate installation walkthroughs for [Linux/Mac](#linuxmac) and [Windows](#windows).
 
 ### Linux/Mac
 
@@ -144,19 +191,26 @@ After these steps, your command prompt will be prefixed by "(ldm)" as shown abov
 (ldm) ~/stable-diffusion$ python3 scripts/preload_models.py
 ```
 
+Note that this step is necessary because I modified the original
+just-in-time model loading scheme to allow the script to work on GPU
+machines that are not internet connected. See [Workaround for machines with limited internet connectivity](#workaround-for-machines-with-limited-internet-connectivity)
+
 7. Now you need to install the weights for the stable diffusion model.
 
-For testing prior to the release of the real weights, you can use an older weight file that produces low-quality images. Create a directory within stable-diffusion named "models/ldm/text2img-large", and use the wget URL downloader tool to copy the weight file into it:
-```
-(ldm) ~/stable-diffusion$ mkdir -p models/ldm/text2img-large
-(ldm) ~/stable-diffusion$ wget -O models/ldm/text2img-large/model.ckpt https://ommer-lab.com/files/latent-diffusion/nitro/txt2img-f8-large/model.ckpt
-```
-For testing with the released weighs, you will do something similar, but with a directory named "models/ldm/stable-diffusion-v1"
+For running with the released weights, you will first need to set up an acount with Hugging Face (https://huggingface.co).
+Use your credentials to log in, and then point your browser at https://huggingface.co/CompVis/stable-diffusion-v-1-4-original.
+You may be asked to sign a license agreement at this point.
+
+Click on "Files and versions" near the top of the page, and then click on the file named "sd-v1-4.ckpt". You'll be taken
+to a page that prompts you to click the "download" link. Save the file somewhere safe on your local machine.
+
+Now run the following commands from within the stable-diffusion directory. This will create a symbolic
+link from the stable-diffusion model.ckpt file, to the true location of the sd-v1-4.ckpt file.
+   
 ```
 (ldm) ~/stable-diffusion$ mkdir -p models/ldm/stable-diffusion-v1
-(ldm) ~/stable-diffusion$ wget -O models/ldm/stable-diffusion-v1/model.ckpt <ENTER URL HERE>
+(ldm) ~/stable-diffusion$ ln -sf /path/to/sd-v1-4.ckpt models/ldm/stable-diffusion-v1/model.ckpt
 ```
-These weight files are ~5 GB in size, so downloading may take a while.
 
 8. Start generating images!
 ```
@@ -172,7 +226,7 @@ These weight files are ~5 GB in size, so downloading may take a while.
 9. Subsequently, to relaunch the script, be sure to run "conda activate ldm" (step 5, second command), enter the "stable-diffusion" 
 directory, and then launch the dream script (step 8). If you forget to activate the ldm environment, the script will fail with multiple ModuleNotFound errors.
 
-### Updating to newer versions of the script
+#### Updating to newer versions of the script
 
 This distribution is changing rapidly. If you used the "git clone" method (step 5) to download the stable-diffusion directory, then to update to the latest and greatest version, launch the Anaconda window, enter "stable-diffusion", and type:
 ```
@@ -213,15 +267,37 @@ This will install all python requirements and activate the "ldm" environment whi
 ```
 python scripts\preload_models.py
 ```
-This installs two machine learning models that stable diffusion requires.
+
+This installs several machine learning models that stable diffusion
+requires. (Note that this step is required. I created it because some people
+are using GPU systems that are behind a firewall and the models can't be
+downloaded just-in-time)
 
 9. Now you need to install the weights for the big stable diffusion model.
 
-For testing prior to the release of the real weights, create a directory within stable-diffusion named "models\ldm\text2img-large".
+For running with the released weights, you will first need to set up
+an acount with Hugging Face (https://huggingface.co).  Use your
+credentials to log in, and then point your browser at
+https://huggingface.co/CompVis/stable-diffusion-v-1-4-original.  You
+may be asked to sign a license agreement at this point.
 
-For testing with the released weights, create a directory within stable-diffusion named "models\ldm\stable-diffusion-v1".
+Click on "Files and versions" near the top of the page, and then click
+on the file named "sd-v1-4.ckpt". You'll be taken to a page that
+prompts you to click the "download" link. Now save the file somewhere
+safe on your local machine.  The weight file is >4 GB in size, so
+downloading may take a while.
 
-Then use a web browser to copy model.ckpt into the appropriate directory. For the text2img-large (pre-release) model, the weights are at https://ommer-lab.com/files/latent-diffusion/nitro/txt2img-f8-large/model.ckpt. Check back here later for the release URL.
+Now run the following commands from **within the stable-diffusion
+directory** to copy the weights file to the right place:
+   
+```
+mkdir -p models\ldm\stable-diffusion-v1
+copy C:\path\to\sd-v1-4.ckpt models\ldm\stable-diffusion-v1\model.ckpt
+```
+Please replace "C:\path\to\sd-v1.4.ckpt" with the correct path to wherever
+you stashed this file. If you prefer not to copy or move the .ckpt file, 
+you may instead create a shortcut to it from within
+"models\ldm\stable-diffusion-v1\".
 
 10. Start generating images!
 ```
@@ -233,7 +309,7 @@ python scripts\dream.py
 ```
 11. Subsequently, to relaunch the script, first activate the Anaconda command window (step 4), enter the stable-diffusion directory (step 6, "cd \path\to\stable-diffusion"), run "conda activate ldm" (step 7b), and then launch the dream script (step 10).
 
-### Updating to newer versions of the script
+#### Updating to newer versions of the script
 
 This distribution is changing rapidly. If you used the "git clone" method (step 5) to download the stable-diffusion directory, then to update to the latest and greatest version, launch the Anaconda window, enter "stable-diffusion", and type:
 ```
@@ -250,7 +326,7 @@ lets you create images from a prompt in just three lines of code:
 ~~~~
 from ldm.simplet2i import T2I
 model   = T2I()
-outputs = model.text2image("a unicorn in manhattan")
+outputs = model.txt2img("a unicorn in manhattan")
 ~~~~
 
 Outputs is a list of lists in the format [[filename1,seed1],[filename2,seed2]...]
@@ -423,6 +499,7 @@ optional arguments:
   --f F                 downsampling factor
   --n_samples N_SAMPLES
                         how many samples to produce for each given prompt. A.k.a. batch size
+                        (note that the seeds for each image in the batch will be unavailable)
   --n_rows N_ROWS       rows in the grid (default: n_samples)
   --scale SCALE         unconditional guidance scale: eps = eps(x, empty) + scale * (eps(x, cond) - eps(x, empty))
   --from-file FROM_FILE

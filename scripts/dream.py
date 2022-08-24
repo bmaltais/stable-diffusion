@@ -40,7 +40,11 @@ def main():
     sys.path.append('.')
     from pytorch_lightning import logging
     from ldm.simplet2i import T2I
-
+    # these two lines prevent a horrible warning message from appearing
+    # when the frozen CLIP tokenizer is imported
+    import transformers
+    transformers.logging.set_verbosity_error()
+    
     # creating a simple text2image object with a handful of
     # defaults passed on the command line.
     # additional parameters will be added (or overriden) during
@@ -63,33 +67,71 @@ def main():
     # gets rid of annoying messages about random seed
     logging.getLogger("pytorch_lightning").setLevel(logging.ERROR)
 
+    infile = None
+    try:
+        if opt.infile is not None:
+            infile = open(opt.infile,'r')
+    except FileNotFoundError as e:
+        print(e)
+        exit(-1)
+
     # preload the model
     if not debugging:
         t2i.load_model()
-    print("\n* Initialization done! Awaiting your command (-h for help, q to quit)...")
+    print("\n* Initialization done! Awaiting your command (-h for help, 'q' to quit, 'cd' to change output dir, 'pwd' to print output dir)...")
 
-    log_path   = os.path.join(opt.outdir,"dream_log.txt")
+    log_path   = os.path.join(opt.outdir,'dream_log.txt')
     with open(log_path,'a') as log:
         cmd_parser = create_cmd_parser()
-        main_loop(t2i,cmd_parser,log)
+        main_loop(t2i,cmd_parser,log,infile)
         log.close()
+    if infile:
+        infile.close()
 
 
-def main_loop(t2i,parser,log):
+def main_loop(t2i,parser,log,infile):
     ''' prompt/read/execute loop '''
     done = False
     
     while not done:
         try:
-            command = input("dream> ")
+            command = infile.readline() if infile else input("dream> ") 
         except EOFError:
             done = True
             break
 
-        elements = shlex.split(command)
-        if elements[0]=='q':  # 
+        if infile and len(command)==0:
             done = True
             break
+
+        if command.startswith(('#','//')):
+            continue
+
+        try:
+            elements = shlex.split(command)
+        except ValueError as e:
+            print(str(e))
+            continue
+        
+        if len(elements)==0:
+            continue
+
+        if elements[0]=='q':
+            done = True
+            break
+
+        if elements[0]=='cd' and len(elements)>1:
+            if os.path.exists(elements[1]):
+                print(f"setting image output directory to {elements[1]}")
+                t2i.outdir=elements[1]
+            else:
+                print(f"directory {elements[1]} does not exist")
+            continue
+
+        if elements[0]=='pwd':
+            print(f"current output directory is {t2i.outdir}")
+            continue
+        
         if elements[0].startswith('!dream'): # in case a stored prompt still contains the !dream command
             elements.pop(0)
             
@@ -116,16 +158,13 @@ def main_loop(t2i,parser,log):
             print("Try again with a prompt!")
             continue
 
-        try:
-            if opt.init_img is None:
-                results = t2i.txt2img(**vars(opt))
-            else:
-                results = t2i.img2img(**vars(opt))
-            print("Outputs:")
-            write_log_message(t2i,opt,results,log)
-        except KeyboardInterrupt:
-            print('*interrupted*')
-            continue
+        if opt.init_img is None:
+            results = t2i.txt2img(**vars(opt))
+        else:
+            results = t2i.img2img(**vars(opt))
+        print("Outputs:")
+        write_log_message(t2i,opt,results,log)
+            
 
     print("goodbye!")
 
@@ -140,7 +179,13 @@ def write_log_message(t2i,opt,results,logfile):
     img_num    = 1
     batch_size = opt.batch_size or t2i.batch_size
     seenit     = {}
-    
+
+    seeds = [a[1] for a in results]
+    if batch_size > 1:
+        seeds = f"(seeds for each batch row: {seeds})"
+    else:
+        seeds = f"(seeds for individual images: {seeds})"
+
     for r in results:
         seed = r[1]
         log_message = (f'{r[0]}: {prompt_str} -S{seed}')
@@ -159,7 +204,10 @@ def write_log_message(t2i,opt,results,logfile):
         if r[0] not in seenit:
             seenit[r[0]] = True
             try:
-                _write_prompt_to_png(r[0],f'{prompt_str} -S{seed}')
+                if opt.grid:
+                    _write_prompt_to_png(r[0],f'{prompt_str} -g -S{seed} {seeds}')
+                else:
+                    _write_prompt_to_png(r[0],f'{prompt_str} -S{seed}')
             except FileNotFoundError:
                 print(f"Could not open file '{r[0]}' for reading")
 
@@ -194,6 +242,10 @@ def create_argv_parser():
                         dest='laion400m',
                         action='store_true',
                         help="fallback to the latent diffusion (laion400m) weights and config")
+    parser.add_argument("--from_file",
+                        dest='infile',
+                        type=str,
+                        help="if specified, load prompts from this file")
     parser.add_argument('-n','--iterations',
                         type=int,
                         default=1,
@@ -211,8 +263,8 @@ def create_argv_parser():
                         choices=['plms','ddim', 'klms'],
                         default='klms',
                         help="which sampler to use (klms) - can only be set on command line")
-    parser.add_argument('-o',
-                        '--outdir',
+    parser.add_argument('--outdir',
+                        '-o',
                         type=str,
                         default="outputs/img-samples",
                         help="directory in which to place generated images and a log of prompts and seeds")
@@ -224,8 +276,8 @@ def create_cmd_parser():
     parser.add_argument('prompt')
     parser.add_argument('-s','--steps',type=int,help="number of steps")
     parser.add_argument('-S','--seed',type=int,help="image seed")
-    parser.add_argument('-n','--iterations',type=int,default=1,help="number of samplings to perform")
-    parser.add_argument('-b','--batch_size',type=int,default=1,help="number of images to produce per sampling")
+    parser.add_argument('-n','--iterations',type=int,default=1,help="number of samplings to perform (slower, but will provide seeds for individual images)")
+    parser.add_argument('-b','--batch_size',type=int,default=1,help="number of images to produce per sampling (will not provide seeds for individual images!)")
     parser.add_argument('-W','--width',type=int,help="image width, multiple of 64")
     parser.add_argument('-H','--height',type=int,help="image height, multiple of 64")
     parser.add_argument('-C','--cfg_scale',default=7.5,type=float,help="prompt configuration scale")
@@ -233,11 +285,13 @@ def create_cmd_parser():
     parser.add_argument('-i','--individual',action='store_true',help="generate individual files (default)")
     parser.add_argument('-I','--init_img',type=str,help="path to input image (supersedes width and height)")
     parser.add_argument('-f','--strength',default=0.75,type=float,help="strength for noising/unnoising. 0.0 preserves image exactly, 1.0 replaces it completely")
+    parser.add_argument('-x','--skip_normalize',action='store_true',help="skip subprompt weight normalization")
     return parser
 
 if readline_available:
     def setup_readline():
-        readline.set_completer(Completer(['--steps','-s','--seed','-S','--iterations','-n','--batch_size','-b',
+        readline.set_completer(Completer(['cd','pwd',
+                                          '--steps','-s','--seed','-S','--iterations','-n','--batch_size','-b',
                                           '--width','-W','--height','-H','--cfg_scale','-C','--grid','-g',
                                           '--individual','-i','--init_img','-I','--strength','-f']).complete)
         readline.set_completer_delims(" ")
@@ -259,8 +313,13 @@ if readline_available:
             return
 
         def complete(self,text,state):
-            if text.startswith('-I') or text.startswith('--init_img'):
-                return self._image_completions(text,state)
+            buffer = readline.get_line_buffer()
+            
+            if text.startswith(('-I','--init_img')):
+                return self._path_completions(text,state,('.png'))
+
+            if buffer.strip().endswith('cd') or text.startswith(('.','/')):
+                return self._path_completions(text,state,())
 
             response = None
             if state == 0:
@@ -280,12 +339,14 @@ if readline_available:
                 response = None
             return response
 
-        def _image_completions(self,text,state):
+        def _path_completions(self,text,state,extensions):
             # get the path so far
             if text.startswith('-I'):
                 path = text.replace('-I','',1).lstrip()
             elif text.startswith('--init_img='):
                 path = text.replace('--init_img=','',1).lstrip()
+            else:
+                path = text
 
             matches  = list()
 
@@ -302,7 +363,7 @@ if readline_available:
                     if full_path.startswith(path):
                         if os.path.isdir(full_path):
                             matches.append(os.path.join(os.path.dirname(text),n)+'/')
-                        elif n.endswith('.png'):
+                        elif n.endswith(extensions):
                             matches.append(os.path.join(os.path.dirname(text),n))
 
             try:
@@ -310,7 +371,6 @@ if readline_available:
             except IndexError:
                 response = None
             return response
-        
 
 if __name__ == "__main__":
     main()

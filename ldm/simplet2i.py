@@ -60,6 +60,7 @@ from torch import autocast
 from contextlib import contextmanager, nullcontext
 import time
 import math
+import re
 
 from ldm.util import instantiate_from_config
 from ldm.models.diffusion.ddim     import DDIMSampler
@@ -103,7 +104,7 @@ The vast majority of these arguments default to reasonable values.
                  seed=None,
                  cfg_scale=7.5,
                  weights="models/ldm/stable-diffusion-v1/model.ckpt",
-                 config = "configs/latent-diffusion/txt2img-1p4B-eval.yaml",
+                 config = "configs/stable-diffusion/v1-inference.yaml",
                  sampler_name="klms",
                  latent_channels=4,
                  downsampling_factor=8,
@@ -142,7 +143,7 @@ The vast majority of these arguments default to reasonable values.
 
     def txt2img(self,prompt,outdir=None,batch_size=None,iterations=None,
                 steps=None,seed=None,grid=None,individual=None,width=None,height=None,
-                cfg_scale=None,ddim_eta=None,strength=None,init_img=None):
+                cfg_scale=None,ddim_eta=None,strength=None,init_img=None,skip_normalize=False):
         """
         Generate an image from the prompt, writing iteration images into the outdir
         The output is a list of lists in the format: [[filename1,seed1], [filename2,seed2],...]
@@ -171,7 +172,6 @@ The vast majority of these arguments default to reasonable values.
 
         # make directories and establish names for the output files
         os.makedirs(outdir, exist_ok=True)
-        base_count = len(os.listdir(outdir))-1
 
         start_code = None
         if self.fixed_code:
@@ -185,65 +185,90 @@ The vast majority of these arguments default to reasonable values.
         sampler         = self.sampler
         images = list()
         seeds  = list()
-
+        filename = None
+        image_count = 0
         tic    = time.time()
-        
-        with torch.no_grad():
-            with precision_scope("cuda"):
-                with model.ema_scope():
-                    all_samples = list()
-                    for n in trange(iterations, desc="Sampling"):
-                        seed_everything(seed)
-                        for prompts in tqdm(data, desc="data", dynamic_ncols=True):
-                            uc = None
-                            if cfg_scale != 1.0:
-                                uc = model.get_learned_conditioning(batch_size * [""])
-                            if isinstance(prompts, tuple):
-                                prompts = list(prompts)
-                            c = model.get_learned_conditioning(prompts)
-                            shape = [self.latent_channels, height // self.downsampling_factor, width // self.downsampling_factor]
-                            samples_ddim, _ = sampler.sample(S=steps,
-                                                             conditioning=c,
-                                                             batch_size=batch_size,
-                                                             shape=shape,
-                                                             verbose=False,
-                                                             unconditional_guidance_scale=cfg_scale,
-                                                             unconditional_conditioning=uc,
-                                                             eta=ddim_eta,
-                                                             x_T=start_code)
 
-                            x_samples_ddim = model.decode_first_stage(samples_ddim)
-                            x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
+        # Gawd. Too many levels of indent here. Need to refactor into smaller routines!
+        try:
+            with torch.no_grad():
+                with precision_scope("cuda"):
+                    with model.ema_scope():
+                        all_samples = list()
+                        for n in trange(iterations, desc="Sampling"):
+                            seed_everything(seed)
+                            for prompts in tqdm(data, desc="data", dynamic_ncols=True):
+                                uc = None
+                                if cfg_scale != 1.0:
+                                    uc = model.get_learned_conditioning(batch_size * [""])
+                                if isinstance(prompts, tuple):
+                                    prompts = list(prompts)
 
-                            if not grid:
-                                for x_sample in x_samples_ddim:
-                                    x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
-                                    filename = os.path.join(outdir, f"{base_count:05}.png")
-                                    Image.fromarray(x_sample.astype(np.uint8)).save(filename)
-                                    images.append([filename,seed])
-                                    base_count += 1
-                            else:
-                                all_samples.append(x_samples_ddim)
-                                seeds.append(seed)
+                                # weighted sub-prompts
+                                subprompts,weights = T2I._split_weighted_subprompts(prompts[0])
+                                if len(subprompts) > 1:
+                                    # i dont know if this is correct.. but it works
+                                    c = torch.zeros_like(uc)
+                                    # get total weight for normalizing
+                                    totalWeight = sum(weights)
+                                    # normalize each "sub prompt" and add it
+                                    for i in range(0,len(subprompts)):
+                                        weight = weights[i]
+                                        if not skip_normalize:
+                                            weight = weight / totalWeight
+                                        c = torch.add(c,model.get_learned_conditioning(subprompts[i]), alpha=weight)
+                                else: # just standard 1 prompt
+                                    c = model.get_learned_conditioning(prompts)
 
-                        seed = self._new_seed()
- 
-                    if grid:
-                        images = self._make_grid(samples=all_samples,
-                                                 seeds=seeds,
-                                                 batch_size=batch_size,
-                                                 iterations=iterations,
-                                                 outdir=outdir)
+                                shape = [self.latent_channels, height // self.downsampling_factor, width // self.downsampling_factor]
+                                samples_ddim, _ = sampler.sample(S=steps,
+                                                                 conditioning=c,
+                                                                 batch_size=batch_size,
+                                                                 shape=shape,
+                                                                 verbose=False,
+                                                                 unconditional_guidance_scale=cfg_scale,
+                                                                 unconditional_conditioning=uc,
+                                                                 eta=ddim_eta,
+                                                                 x_T=start_code)
+
+                                x_samples_ddim = model.decode_first_stage(samples_ddim)
+                                x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
+
+                                if not grid:
+                                    for x_sample in x_samples_ddim:
+                                        x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
+                                        filename = self._unique_filename(outdir,previousname=filename,
+                                                                         seed=seed,isbatch=(batch_size>1))
+                                        assert not os.path.exists(filename)
+                                        Image.fromarray(x_sample.astype(np.uint8)).save(filename)
+                                        images.append([filename,seed])
+                                else:
+                                    all_samples.append(x_samples_ddim)
+                                    seeds.append(seed)
+
+                            image_count += 1
+                            seed = self._new_seed()
+                        if grid:
+                            images = self._make_grid(samples=all_samples,
+                                                     seeds=seeds,
+                                                     batch_size=batch_size,
+                                                     iterations=iterations,
+                                                     outdir=outdir)
+        except KeyboardInterrupt:
+            print('*interrupted*')
+            print('Partial results will be returned; if --grid was requested, nothing will be returned.')
+        except RuntimeError as e:
+            print(str(e))
 
         toc = time.time()
-        print(f'{batch_size * iterations} images generated in',"%4.2fs"% (toc-tic))
+        print(f'{image_count} images generated in',"%4.2fs"% (toc-tic))
 
         return images
         
     # There is lots of shared code between this and txt2img and should be refactored.
     def img2img(self,prompt,outdir=None,init_img=None,batch_size=None,iterations=None,
                 steps=None,seed=None,grid=None,individual=None,width=None,height=None,
-                cfg_scale=None,ddim_eta=None,strength=None):
+                cfg_scale=None,ddim_eta=None,strength=None,skip_normalize=False):
         """
         Generate an image from the prompt and the initial image, writing iteration images into the outdir
         The output is a list of lists in the format: [[filename1,seed1], [filename2,seed2],...]
@@ -283,7 +308,6 @@ The vast majority of these arguments default to reasonable values.
 
         # make directories and establish names for the output files
         os.makedirs(outdir, exist_ok=True)
-        base_count = len(os.listdir(outdir))-1
 
         assert os.path.isfile(init_img)
         init_image = self._load_img(init_img).to(self.device)
@@ -304,60 +328,83 @@ The vast majority of these arguments default to reasonable values.
 
         images = list()
         seeds  = list()
-
+        filename = None
+        image_count = 0 # actual number of iterations performed
         tic    = time.time()
-        
-        with torch.no_grad():
-            with precision_scope("cuda"):
-                with model.ema_scope():
-                    all_samples = list()
-                    for n in trange(iterations, desc="Sampling"):
-                        seed_everything(seed)
-                        for prompts in tqdm(data, desc="data", dynamic_ncols=True):
-                            uc = None
-                            if cfg_scale != 1.0:
-                                uc = model.get_learned_conditioning(batch_size * [""])
-                            if isinstance(prompts, tuple):
-                                prompts = list(prompts)
-                            c = model.get_learned_conditioning(prompts)
 
-                            # encode (scaled latent)
-                            z_enc = sampler.stochastic_encode(init_latent, torch.tensor([t_enc]*batch_size).to(self.device))
-                            # decode it
-                            samples = sampler.decode(z_enc, c, t_enc, unconditional_guidance_scale=cfg_scale,
-                                                     unconditional_conditioning=uc,)
+        # Gawd. Too many levels of indent here. Need to refactor into smaller routines!
+        try:
+            with torch.no_grad():
+                with precision_scope("cuda"):
+                    with model.ema_scope():
+                        all_samples = list()
+                        for n in trange(iterations, desc="Sampling"):
+                            seed_everything(seed)
+                            for prompts in tqdm(data, desc="data", dynamic_ncols=True):
+                                uc = None
+                                if cfg_scale != 1.0:
+                                    uc = model.get_learned_conditioning(batch_size * [""])
+                                if isinstance(prompts, tuple):
+                                    prompts = list(prompts)
 
-                            x_samples = model.decode_first_stage(samples)
-                            x_samples = torch.clamp((x_samples + 1.0) / 2.0, min=0.0, max=1.0)
+                                # weighted sub-prompts
+                                subprompts,weights = T2I._split_weighted_subprompts(prompts[0])
+                                if len(subprompts) > 1:
+                                    # i dont know if this is correct.. but it works
+                                    c = torch.zeros_like(uc)
+                                    # get total weight for normalizing
+                                    totalWeight = sum(weights)
+                                    # normalize each "sub prompt" and add it
+                                    for i in range(0,len(subprompts)):
+                                        weight = weights[i]
+                                        if not skip_normalize:
+                                            weight = weight / totalWeight
+                                        c = torch.add(c,model.get_learned_conditioning(subprompts[i]), alpha=weight)
+                                else: # just standard 1 prompt
+                                    c = model.get_learned_conditioning(prompts)
 
-                            if not grid:
-                                for x_sample in x_samples:
-                                    x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
-                                    filename = os.path.join(outdir, f"{base_count:05}.png")
-                                    Image.fromarray(x_sample.astype(np.uint8)).save(filename)
-                                    images.append([filename,seed])
-                                    base_count += 1
-                            else:
-                                all_samples.append(x_samples)
-                                seeds.append(seed)
+                                # encode (scaled latent)
+                                z_enc = sampler.stochastic_encode(init_latent, torch.tensor([t_enc]*batch_size).to(self.device))
+                                # decode it
+                                samples = sampler.decode(z_enc, c, t_enc, unconditional_guidance_scale=cfg_scale,
+                                                         unconditional_conditioning=uc,)
 
-                        seed = self._new_seed()
+                                x_samples = model.decode_first_stage(samples)
+                                x_samples = torch.clamp((x_samples + 1.0) / 2.0, min=0.0, max=1.0)
 
-                    if grid:
-                        images = self._make_grid(samples=all_samples,
-                                                 seeds=seeds,
-                                                 batch_size=batch_size,
-                                                 iterations=iterations,
-                                                 outdir=outdir)
+                                if not grid:
+                                    for x_sample in x_samples:
+                                        x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
+                                        filename = self._unique_filename(outdir,previousname=filename,
+                                                                         seed=seed,isbatch=(batch_size>1))
+                                        assert not os.path.exists(filename)
+                                        Image.fromarray(x_sample.astype(np.uint8)).save(filename)
+                                        images.append([filename,seed])
+                                else:
+                                    all_samples.append(x_samples)
+                                    seeds.append(seed)
+                            image_count +=1
+                            seed = self._new_seed()
+                        if grid:
+                            images = self._make_grid(samples=all_samples,
+                                                     seeds=seeds,
+                                                     batch_size=batch_size,
+                                                     iterations=iterations,
+                                                     outdir=outdir)
+
+        except KeyboardInterrupt:
+            print('*interrupted*')
+            print('Partial results will be returned; if --grid was requested, nothing will be returned.')
+        except RuntimeError as e:
+            print(str(e))
 
         toc = time.time()
-        print(f'{batch_size * iterations} images generated in',"%4.2fs"% (toc-tic))
+        print(f'{image_count} images generated in',"%4.2fs"% (toc-tic))
 
         return images
 
     def _make_grid(self,samples,seeds,batch_size,iterations,outdir):
         images = list()
-        base_count = len(os.listdir(outdir))-1
         n_rows = batch_size if batch_size>1 else int(math.sqrt(batch_size * iterations))
         # save as grid
         grid = torch.stack(samples, 0)
@@ -366,7 +413,7 @@ The vast majority of these arguments default to reasonable values.
 
         # to image
         grid = 255. * rearrange(grid, 'c h w -> h w c').cpu().numpy()
-        filename = os.path.join(outdir, f"{base_count:05}.png")
+        filename = self._unique_filename(outdir,seed=seeds[0],grid_count=batch_size*iterations)
         Image.fromarray(grid.astype(np.uint8)).save(filename)
         for s in seeds:
             images.append([filename,s])
@@ -430,3 +477,85 @@ The vast majority of these arguments default to reasonable values.
         image = image[None].transpose(0, 3, 1, 2)
         image = torch.from_numpy(image)
         return 2.*image - 1.
+
+    def _unique_filename(self,outdir,previousname=None,seed=0,isbatch=False,grid_count=None):
+        revision = 1
+
+        if previousname is None:
+            # sort reverse alphabetically until we find max+1
+            dirlist   = sorted(os.listdir(outdir),reverse=True)
+            # find the first filename that matches our pattern or return 000000.0.png
+            filename   = next((f for f in dirlist if re.match('^(\d+)\..*\.png',f)),'0000000.0.png')
+            basecount  = int(filename.split('.',1)[0])
+            basecount += 1
+            if grid_count is not None:
+                grid_label = f'grid#1-{grid_count}'
+                filename = f'{basecount:06}.{seed}.{grid_label}.png'
+            elif isbatch:
+                filename = f'{basecount:06}.{seed}.01.png'
+            else:
+                filename = f'{basecount:06}.{seed}.png'
+            
+            return os.path.join(outdir,filename)
+
+        else:
+            previousname = os.path.basename(previousname)
+            x = re.match('^(\d+)\..*\.png',previousname)
+            if not x:
+                return self._unique_filename(outdir,previousname,seed)
+
+            basecount = int(x.groups()[0])
+            series = 0 
+            finished = False
+            while not finished:
+                series += 1
+                filename = f'{basecount:06}.{seed}.png'
+                if isbatch or os.path.exists(os.path.join(outdir,filename)):
+                    filename = f'{basecount:06}.{seed}.{series:02}.png'
+                finished = not os.path.exists(os.path.join(outdir,filename))
+            return os.path.join(outdir,filename)
+
+    def _split_weighted_subprompts(text):
+        """
+        grabs all text up to the first occurrence of ':' 
+        uses the grabbed text as a sub-prompt, and takes the value following ':' as weight
+        if ':' has no value defined, defaults to 1.0
+        repeats until no text remaining
+        """
+        remaining = len(text)
+        prompts = []
+        weights = []
+        while remaining > 0:
+            if ":" in text:
+                idx = text.index(":") # first occurrence from start
+                # grab up to index as sub-prompt
+                prompt = text[:idx]
+                remaining -= idx
+                # remove from main text
+                text = text[idx+1:]
+                # find value for weight 
+                if " " in text:
+                    idx = text.index(" ") # first occurence
+                else: # no space, read to end
+                    idx = len(text)
+                if idx != 0:
+                    try:
+                        weight = float(text[:idx])
+                    except: # couldn't treat as float
+                        print(f"Warning: '{text[:idx]}' is not a value, are you missing a space?")
+                        weight = 1.0
+                else: # no value found
+                    weight = 1.0
+                # remove from main text
+                remaining -= idx
+                text = text[idx+1:]
+                # append the sub-prompt and its weight
+                prompts.append(prompt)
+                weights.append(weight)
+            else: # no : found
+                if len(text) > 0: # there is still text though
+                    # take remainder as weight 1
+                    prompts.append(text)
+                    weights.append(1.0)
+                remaining = 0
+        return prompts, weights
