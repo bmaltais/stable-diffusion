@@ -84,6 +84,10 @@ The --init_img (-I) option gives the path to the seed picture. --strength (-f) c
 the original will be modified, ranging from 0.0 (keep the original intact), to 1.0 (ignore the original
 completely). The default is 0.75, and ranges from 0.25-0.75 give interesting results.
 
+You may also pass a -v<count> option to generate count variants on the original image. This is done by
+passing the first generated image back into img2img the requested number of times. It generates interesting
+variants.
+
 ## Weighted Prompts
 
 You may weight different sections of the prompt to tell the sampler to attach different levels of
@@ -127,11 +131,15 @@ samples, samples scaled for a sample of the prompt and one with the init word pr
 
 On a RTX3090, the process for SD will take ~1h @1.6 iterations/sec.
 
-Note: According to the associated paper, the optimal number of images is 3-5 any more images than that and your model might not converge.
+Note: According to the associated paper, the optimal number of images
+is 3-5. Your model may not converge if you use more images than that.
 
-Training will run indefinately, but you may wish to stop it before the heat death of the universe, when you fine a low loss epoch or around ~5000 iterations.
+Training will run indefinately, but you may wish to stop it before the
+heat death of the universe, when you find a low loss epoch or around
+~5000 iterations.
 
-Once the model is trained, specify the trained .pt file when starting dream using
+Once the model is trained, specify the trained .pt file when starting
+dream using
 
 ~~~~
 (ldm) ~/stable-diffusion$ python3 ./scripts/dream.py --embedding_path /path/to/embedding.pt --full_precision
@@ -156,10 +164,17 @@ It's also possible to train multiple tokens (modify the placeholder string in co
                                             --output_path /path/to/output/embedding.pt
 ~~~~
 
-Credit goes to @rinongal and the repository located at https://github.com/rinongal/textual_inversion Please see the repository and associated paper for details and limitations.
+Credit goes to @rinongal and the repository located at
+https://github.com/rinongal/textual_inversion Please see the
+repository and associated paper for details and limitations.
 
 ## Changes
 
+* v1.09 (24 August 2022)
+   * A new -v option allows you to generate multiple variants of an initial image
+     in img2img mode. (kudos to Oceanswave)
+   * Added ability to personalize text to image generation (kudos to nicolai256)
+   
 * v1.08 (24 August 2022)
    * Escape single quotes on the dream> command before trying to parse. This avoids
      parse errors.
@@ -439,7 +454,11 @@ to send me an email if you use and like the script.
 
 *Original Author:* Lincoln D. Stein <lincoln.stein@gmail.com>
 
-*Contributions by:* [Peter Kowalczyk](https://github.com/slix), [Henry Harrison](https://github.com/hwharrison), [xraxra](https://github.com/xraxra), and [bmaltais](https://github.com/bmaltais)
+*Contributions by:* 
+[Peter Kowalczyk](https://github.com/slix), [Henry Harrison](https://github.com/hwharrison),
+[xraxra](https://github.com/xraxra), [bmaltais](https://github.com/bmaltais), [Sean McLellan] (https://github.com/Oceanswave],
+[nicolai256](https://github.com/nicolai256], [Benjamin Warner](https://github.com/warner-benjamin),
+and [tildebyte](https://github.com/tildebyte)
 
 Original portions of the software are Copyright (c) 2020 Lincoln D. Stein (https://github.com/lstein)
 

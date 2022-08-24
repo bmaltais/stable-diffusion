@@ -58,7 +58,6 @@ import sys
 import os
 from omegaconf import OmegaConf
 from PIL import Image
-import PIL
 from tqdm import tqdm, trange
 from itertools import islice
 from einops import rearrange, repeat
@@ -69,6 +68,7 @@ from contextlib import contextmanager, nullcontext
 import time
 import math
 import re
+import traceback
 
 from ldm.util import instantiate_from_config
 from ldm.models.diffusion.ddim     import DDIMSampler
@@ -157,7 +157,8 @@ The vast majority of these arguments default to reasonable values.
     @torch.no_grad()
     def txt2img(self,prompt,outdir=None,batch_size=None,iterations=None,
                 steps=None,seed=None,grid=None,individual=None,width=None,height=None,
-                cfg_scale=None,ddim_eta=None,strength=None,embedding_path=None,init_img=None,skip_normalize=False):
+                cfg_scale=None,ddim_eta=None,strength=None,embedding_path=None,init_img=None,
+                skip_normalize=False,variants=None):    # note the "variants" option is an unused hack caused by how options are passed
         """
         Generate an image from the prompt, writing iteration images into the outdir
         The output is a list of lists in the format: [[filename1,seed1], [filename2,seed2],...]
@@ -285,7 +286,8 @@ The vast majority of these arguments default to reasonable values.
     @torch.no_grad()
     def img2img(self,prompt,outdir=None,init_img=None,batch_size=None,iterations=None,
                 steps=None,seed=None,grid=None,individual=None,width=None,height=None,
-                cfg_scale=None,ddim_eta=None,strength=None,embedding_path=None,skip_normalize=False):
+                cfg_scale=None,ddim_eta=None,strength=None,embedding_path=None,
+                skip_normalize=False,variants=None):   # note the "variants" option is an unused hack caused by how options are passed
         """
         Generate an image from the prompt and the initial image, writing iteration images into the outdir
         The output is a list of lists in the format: [[filename1,seed1], [filename2,seed2],...]
@@ -323,7 +325,7 @@ The vast majority of these arguments default to reasonable values.
         # PLMS sampler not supported yet, so ignore previous sampler
         if self.sampler_name!='ddim':
             print(f"sampler '{self.sampler_name}' is not yet supported. Using DDM sampler")
-            sampler = DDIMSampler(model)
+            sampler = DDIMSampler(model, device=self.device)
         else:
             sampler = self.sampler
 
@@ -415,7 +417,8 @@ The vast majority of these arguments default to reasonable values.
             print('*interrupted*')
             print('Partial results will be returned; if --grid was requested, nothing will be returned.')
         except RuntimeError as e:
-            print(str(e))
+            print("Oops! A runtime error has occurred. If this is unexpected, please copy-and-paste this stack trace and post it as an Issue to http://github.com/lstein/stable-diffusion")
+            traceback.print_exc()
 
         toc = time.time()
         print(f'{image_count} images generated in',"%4.2fs"% (toc-tic))
@@ -460,9 +463,9 @@ The vast majority of these arguments default to reasonable values.
 
             msg = f'setting sampler to {self.sampler_name}'
             if self.sampler_name=='plms':
-                self.sampler = PLMSSampler(self.model)
+                self.sampler = PLMSSampler(self.model, device=self.device)
             elif self.sampler_name == 'ddim':
-                self.sampler = DDIMSampler(self.model)
+                self.sampler = DDIMSampler(self.model, device=self.device)
             elif self.sampler_name == 'k_dpm_2_a':
                 self.sampler = KSampler(self.model,'dpm_2_ancestral')
             elif self.sampler_name == 'k_dpm_2':
@@ -477,7 +480,7 @@ The vast majority of these arguments default to reasonable values.
                 self.sampler = KSampler(self.model,'lms')
             else:
                 msg = f'unsupported sampler {self.sampler_name}, defaulting to plms'
-                self.sampler = PLMSSampler(self.model)
+                self.sampler = PLMSSampler(self.model, device=self.device)
 
             print(msg)
 
@@ -504,7 +507,7 @@ The vast majority of these arguments default to reasonable values.
         w, h = image.size
         print(f"loaded input image of size ({w}, {h}) from {path}")
         w, h = map(lambda x: x - x % 32, (w, h))  # resize to integer multiple of 32
-        image = image.resize((w, h), resample=PIL.Image.LANCZOS)
+        image = image.resize((w, h), resample=Image.Resampling.LANCZOS)
         image = np.array(image).astype(np.float32) / 255.0
         image = image[None].transpose(0, 3, 1, 2)
         image = torch.from_numpy(image)
