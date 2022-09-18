@@ -2,6 +2,9 @@
 outputs/
 models/ldm/stable-diffusion-v1/model.ckpt
 
+# ignore a directory which serves as a place for initial images
+inputs/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -73,6 +76,9 @@ db.sqlite3-journal
 # Flask stuff:
 instance/
 .webassets-cache
+
+# WebUI temp files:
+img2img-tmp.png
 
 # Scrapy stuff:
 .scrapy
@@ -170,6 +176,13 @@ cython_debug/
 #.idea/
 
 src
-logs/
 **/__pycache__/
 outputs
+
+# Logs and associated folders 
+# created from generated embeddings.
+logs
+testtube
+checkpoints
+# If it's a Mac
+.DS_Store
